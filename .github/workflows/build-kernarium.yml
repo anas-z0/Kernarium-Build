@@ -1,0 +1,210 @@
+# SPDX-License-Identifier: GPL-2.0-or-later
+name: Build Kernarium IPA
+
+on:
+  workflow_dispatch:
+    inputs:
+      boot_base_url:
+        description: HTTPS URL of the accepted aarch64 boot-base cpio.gz (verified against the tracked descriptor)
+        required: true
+        type: string
+
+permissions:
+  contents: read
+
+concurrency:
+  group: kernarium-${{ github.ref }}
+  cancel-in-progress: false
+
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  boot-base:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Download and verify accepted Linux boot base
+        env:
+          BOOT_BASE_URL: ${{ inputs.boot_base_url }}
+        run: |
+          set -euo pipefail
+          mkdir -p .build/ci-inputs
+          curl --fail --location --retry 3 --max-time 300 \
+            --proto '=https' --proto-redir '=https' \
+            "$BOOT_BASE_URL" -o .build/ci-inputs/boot-base.cpio.gz
+          python3 -B tools/rootfs/boot-ramdisk/verify_base.py \
+            --descriptor tools/rootfs/boot-ramdisk/accepted-aarch64.env \
+            --archive .build/ci-inputs/boot-base.cpio.gz
+      - uses: actions/upload-artifact@v4
+        with:
+          name: verified-boot-base
+          path: .build/ci-inputs/boot-base.cpio.gz
+          if-no-files-found: error
+          retention-days: 7
+
+  kernels:
+    needs: boot-base
+    runs-on: xcode-27
+    timeout-minutes: 180
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Install kernel build tools
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64
+          brew install cmake ninja make llvm bison flex autoconf automake libtool pkgconf rsync
+          python3 -m venv .build/ci-tools
+          .build/ci-tools/bin/pip install 'meson>=1.7,<2'
+          echo "$PWD/.build/ci-tools/bin" >> "$GITHUB_PATH"
+          for tool in llvm bison flex; do
+            echo "$(brew --prefix "$tool")/bin" >> "$GITHUB_PATH"
+          done
+          # Topic replay uses the caller's configured Git committer identity.
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          {
+            echo "UML_KERNEL_CC=$(brew --prefix llvm)/bin/clang"
+            echo "UML_KERNEL_HOST_CC=$(brew --prefix llvm)/bin/clang"
+          } >> "$GITHUB_ENV"
+      - name: Build verified kernel host tools
+        run: |
+          set -euo pipefail
+          dependencies/prepare.sh --product kernel-host-tools
+          dependencies/prepare.sh --archive-manifest dependencies/kernel-host-tools/archives.tsv
+          dependencies/build-kernel-host-tools.sh --jobs "$(sysctl -n hw.logicalcpu)"
+          echo "UML_KERNEL_LD=$(brew --prefix llvm)/bin/ld.lld" >> "$GITHUB_ENV"
+      - name: Prepare verified kernel host tools
+        run: |
+          set -euo pipefail
+          dependencies/prepare.sh --product kernel-host-tools
+          dependencies/prepare.sh --archive-manifest dependencies/kernel-host-tools/archives.tsv
+          dependencies/build-kernel-host-tools.sh --jobs "$(sysctl -n hw.logicalcpu)"
+      - name: Create case-sensitive kernel workspace
+        run: |
+          set -euo pipefail
+          mount="$RUNNER_TEMP/kernarium-kernel"
+          mkdir -p "$mount"
+          hdiutil create -size 60g -type SPARSE -fs APFSX \
+            -volname KernariumKernel "$RUNNER_TEMP/kernel.sparseimage"
+          hdiutil attach "$RUNNER_TEMP/kernel.sparseimage" \
+            -mountpoint "$mount" -nobrowse
+          printf 'UML_KERNEL_SOURCE_DIR=%s/linux\n' "$mount" \
+            > kernel/mainline-6.18/source-location.conf
+          echo "KERNEL_WORK=$mount" >> "$GITHUB_ENV"
+      - name: Build and publish both accepted kernel products
+        run: |
+          set -euo pipefail
+          kernel/mainline-6.18/scripts/prepare-source.sh
+          for product in linux android; do
+            descriptor=kernel/mainline-6.18/artifacts/accepted-4k.env
+            if [ "$product" = android ]; then
+              descriptor=kernel/mainline-6.18/artifacts/accepted-android-4k.env
+            fi
+            # These are tracked repository descriptors, not remote input.
+            # shellcheck disable=SC1090
+            source "$descriptor"
+            kernel/mainline-6.18/build/build-kernel.sh \
+              --product "$product" --build "$KERNEL_WORK/build-$product" \
+              --jobs "$(sysctl -n hw.logicalcpu)"
+            python3 -B kernel/mainline-6.18/build/publish-artifact.py \
+              --source "$KERNEL_WORK/linux" --build "$KERNEL_WORK/build-$product" \
+              --product "$product" --output-root "$PWD/.build/kernel/artifacts" \
+              --release-id "$UML_KERNEL_ARTIFACT_RELEASE_ID" \
+              --objcopy "$(brew --prefix llvm)/bin/llvm-objcopy"
+          done
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kernel-bundles
+          path: .build/kernel/artifacts/
+          if-no-files-found: error
+          retention-days: 7
+      - name: Detach kernel workspace
+        if: always()
+        run: |
+          if [ -n "${KERNEL_WORK:-}" ]; then
+            hdiutil detach "$KERNEL_WORK"
+          fi
+
+  app:
+    needs: kernels
+    runs-on: xcode-27
+    timeout-minutes: 240
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v4
+        with:
+          name: kernel-bundles
+          path: .build/kernel/artifacts
+      - uses: actions/download-artifact@v4
+        with:
+          name: verified-boot-base
+          path: .build/ci-inputs
+      - name: Install dependency build tools
+        run: |
+          set -euo pipefail
+          test "$(uname -m)" = arm64
+          sdk=$(xcrun --sdk iphoneos --show-sdk-version)
+          test "${sdk%%.*}" -ge 27
+          brew install cmake ninja make bison flex autoconf automake libtool pkgconf rsync
+          python3 -m venv .build/ci-tools
+          .build/ci-tools/bin/pip install 'meson>=1.7,<2' mako packaging pyyaml
+          echo "$PWD/.build/ci-tools/bin" >> "$GITHUB_PATH"
+          for tool in bison flex; do
+            echo "$(brew --prefix "$tool")/bin" >> "$GITHUB_PATH"
+          done
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+      - name: Build verified iOS dependencies
+        run: |
+          set -euo pipefail
+          jobs=$(sysctl -n hw.logicalcpu)
+          for product in apple-gpu-vulkan-experiment ios-network ios-storage ios-compression; do
+            dependencies/prepare.sh --product "$product"
+          done
+          dependencies/build-apple-gpu.sh --platform ios --jobs "$jobs"
+          dependencies/build-ios-network.sh --platform ios --jobs "$jobs"
+          dependencies/build-ios-storage.sh --jobs "$jobs"
+          dependencies/build-ios-zstd.sh --jobs "$jobs"
+      - name: Build and package both runtime frameworks
+        run: |
+          set -euo pipefail
+          for preset in kernarium-ios-device kernarium-ios-device-android; do
+            cmake --preset "$preset" \
+              -DUML_BOOT_BASE_ARCHIVE="$PWD/.build/ci-inputs/boot-base.cpio.gz"
+            cmake --build --preset "$preset" --parallel "$(sysctl -n hw.logicalcpu)"
+          done
+          Kernarium/scripts/package-ios-frameworks.sh --sdk device
+      - name: Build unsigned device app
+        run: |
+          set -euo pipefail
+          xcodebuild -project Kernarium/Kernarium.xcodeproj -scheme Kernarium \
+            -configuration Release -destination 'generic/platform=iOS' \
+            -derivedDataPath .build/ci-derived-data \
+            -clonedSourcePackagesDirPath .build/swift-packages \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO \
+            CURRENT_PROJECT_VERSION="$GITHUB_RUN_NUMBER" build
+          python3 -B scripts/check-no-fexcore.py .build/ci-derived-data/Build/Products
+          python3 -B scripts/check-no-aot-diagnostics.py .build/ci-derived-data/Build/Products
+      - name: Package IPA for external signing
+        run: |
+          set -euo pipefail
+          mkdir -p .build/ci-output/Payload
+          ditto .build/ci-derived-data/Build/Products/Release-iphoneos/Kernarium.app \
+            .build/ci-output/Payload/Kernarium.app
+          cd .build/ci-output
+          ditto -c -k --keepParent Payload Kernarium-unsigned.ipa
+      - uses: actions/upload-artifact@v4
+        with:
+          name: Kernarium-unsigned-ipa
+          path: .build/ci-output/Kernarium-unsigned.ipa
+          if-no-files-found: error
+          retention-days: 7
