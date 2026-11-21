@@ -7,8 +7,11 @@ include_guard(GLOBAL)
 include("${PROJECT_SOURCE_DIR}/kernel/common/artifacts/KernelArtifact.cmake")
 
 function(uml_select_boot_base ARCHITECTURE OUT_ARCHIVE)
-    set(_descriptor
-        "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/accepted-${ARCHITECTURE}.env")
+    uml_cache_accepted_artifact_path(
+        UML_BOOT_BASE_DESCRIPTOR
+        "${CMAKE_CURRENT_FUNCTION_LIST_DIR}/accepted-${ARCHITECTURE}.env"
+        "Acceptance descriptor for the selected boot base archive")
+    set(_descriptor "${UML_BOOT_BASE_DESCRIPTOR}")
     uml_watch_artifact_inputs("${_descriptor}")
     foreach(_key SCHEMA RELEASE FILE ARCHITECTURE SIZE SHA256)
         uml_read_artifact_env("${_descriptor}" "UML_BOOT_BASE_${_key}"

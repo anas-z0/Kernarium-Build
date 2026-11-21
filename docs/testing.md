@@ -243,12 +243,15 @@ and its audit.
 
 ## Apple builds and Kernarium
 
-The manually dispatched `Build Kernarium IPA` GitHub Actions workflow uses the
+The `Build Kernarium IPA` GitHub Actions workflow uses the
 arm64 Xcode 27 runner to build both accepted kernels, verified iOS dependency
-prefixes, and the device application. Its `boot_base_url` input must provide
-the archive selected by
-[`accepted-aarch64.env`](../tools/rootfs/boot-ramdisk/accepted-aarch64.env);
-the boot-base verifier runs before the Apple jobs. The downloadable
+prefixes, and the device application. An arm64 Linux job builds the boot base
+with the starter producer and verifies its boot contract before creating a
+descriptor for that run. The Apple build consumes that descriptor and checks
+the archive's checksum; the workflow needs no external boot-base download.
+It runs on manual dispatch and relevant boot-producer or workflow changes on
+`main`.
+The downloadable
 `Kernarium-unsigned-ipa` artifact needs external signing before installation,
 including the application's increased-memory-limit and extended-virtual-addressing
 entitlements. Guest root filesystems remain separate launch inputs. This

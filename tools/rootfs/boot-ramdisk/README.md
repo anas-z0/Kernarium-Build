@@ -98,6 +98,12 @@ tools/rootfs/boot-ramdisk/verify_base.py --descriptor accepted-aarch64.env \
   --archive /path/to/uml-boot-base-aarch64.cpio.gz
 ```
 
+For a newly produced base, `verify_base.py --write-descriptor` validates the
+boot contract before creating its descriptor. `UML_BOOT_BASE_DESCRIPTOR`
+selects that descriptor in a CMake build; the default remains the tracked
+descriptor for the guest architecture. CI passes the verified producer output
+and its descriptor together between jobs.
+
 Publish a new release under a new name; never replace an accepted one. The
 unit test `boot-initramfs-archive`, the tooling tests `rootfs-boot-base-contract`
 and `rootfs-initramfs-host-tool` and the integration test

@@ -7,6 +7,7 @@ base is accepted only when this check passes: the descriptor's size and
 SHA-256, one gzip member holding a newc archive, the fail-loud /init, the
 programs the per-run /init calls, and static ELF programs for the
 descriptor's architecture with 16 KiB segment alignment.
+New producer outputs can be validated and described with --write-descriptor.
 """
 
 from __future__ import annotations
@@ -282,6 +283,34 @@ def verify(descriptor_path: Path, archive: Path) -> dict[str, object]:
     }
 
 
+def write_descriptor(archive: Path, architecture: str, release: str, output: Path) -> None:
+    """Describe a newly produced base only after checking its boot contract."""
+    if architecture not in ELF_MACHINES:
+        raise VerificationError(f"unsupported architecture: {architecture}")
+    if re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", release) is None:
+        raise VerificationError("release must be a plain release identifier")
+    try:
+        data = archive.read_bytes()
+    except OSError as error:
+        raise VerificationError(f"cannot read {archive}: {error}") from error
+    check_archive(parse_newc(gunzip_single_member(data)), architecture)
+    values = {
+        "SCHEMA": "1",
+        "RELEASE": release,
+        "FILE": f"uml-boot-base-{architecture}.cpio.gz",
+        "ARCHITECTURE": architecture,
+        "SIZE": str(len(data)),
+        "SHA256": hashlib.sha256(data).hexdigest(),
+    }
+    try:
+        with output.open("x", encoding="utf-8") as handle:
+            handle.write("# SPDX-License-Identifier: GPL-2.0-or-later\n")
+            for key, value in values.items():
+                handle.write(f"UML_BOOT_BASE_{key}='{value}'\n")
+    except OSError as error:
+        raise VerificationError(f"cannot create {output}: {error}") from error
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument(
@@ -291,15 +320,32 @@ def main() -> int:
     )
     parser.add_argument("--architecture", choices=sorted(ELF_MACHINES))
     parser.add_argument(
+        "--write-descriptor", type=Path,
+        help="create a new descriptor after validating a produced archive; never overwrite",
+    )
+    parser.add_argument("--release", help="release identity for a new descriptor")
+    parser.add_argument(
         "--archive",
         type=Path,
         help="the archive (default: .build/rootfs/<release>/<file>)",
     )
     arguments = parser.parse_args()
-    if (arguments.descriptor is None) == (arguments.architecture is None):
-        parser.error("pass exactly one of --descriptor and --architecture")
-    descriptor = arguments.descriptor or HERE / f"accepted-{arguments.architecture}.env"
+    if arguments.write_descriptor is not None:
+        if (arguments.descriptor is not None or arguments.architecture is None
+                or arguments.archive is None or arguments.release is None):
+            parser.error("--write-descriptor needs --architecture, --archive and --release; "
+                         "it cannot be combined with --descriptor")
+        descriptor = arguments.write_descriptor
+    else:
+        if arguments.release is not None:
+            parser.error("--release requires --write-descriptor")
+        if (arguments.descriptor is None) == (arguments.architecture is None):
+            parser.error("pass exactly one of --descriptor and --architecture")
+        descriptor = arguments.descriptor or HERE / f"accepted-{arguments.architecture}.env"
     try:
+        if arguments.write_descriptor is not None:
+            write_descriptor(arguments.archive, arguments.architecture,
+                             arguments.release, descriptor)
         archive = arguments.archive
         if archive is None:
             values = read_descriptor(descriptor)

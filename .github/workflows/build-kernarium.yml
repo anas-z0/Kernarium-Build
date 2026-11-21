@@ -3,11 +3,12 @@ name: Build Kernarium IPA
 
 on:
   workflow_dispatch:
-    inputs:
-      boot_base_url:
-        description: HTTPS URL of the accepted aarch64 boot-base cpio.gz (verified against the tracked descriptor)
-        required: true
-        type: string
+  push:
+    branches: [main]
+    paths:
+      - .github/workflows/build-kernarium.yml
+      - tools/rootfs/boot-ramdisk/**
+      - tools/rootfs/starter/**
 
 permissions:
   contents: read
@@ -22,28 +23,40 @@ defaults:
 
 jobs:
   boot-base:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 10
+    runs-on: ubuntu-24.04-arm
+    timeout-minutes: 180
     steps:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      - name: Download and verify accepted Linux boot base
-        env:
-          BOOT_BASE_URL: ${{ inputs.boot_base_url }}
+      - name: Install Linux image build tools
         run: |
           set -euo pipefail
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential bc bison flex cmake cpio curl debootstrap e2fsprogs \
+            file gawk git gzip libncurses-dev patch python3 rsync \
+            gdisk tar unzip wget xz-utils
+          python3 -B tests/tooling/rootfs/test_boot_base.py \
+            --boot-ramdisk tools/rootfs/boot-ramdisk
+      - name: Produce and verify Linux boot base
+        run: |
+          set -euo pipefail
+          tools/rootfs/starter/build-all.sh --product boot-base-aarch64 \
+            --work "$RUNNER_TEMP/boot-base-work" \
+            --output "$RUNNER_TEMP/boot-base-release" --jobs "$(nproc)"
           mkdir -p .build/ci-inputs
-          curl --fail --location --retry 3 --max-time 300 \
-            --proto '=https' --proto-redir '=https' \
-            "$BOOT_BASE_URL" -o .build/ci-inputs/boot-base.cpio.gz
+          cp "$RUNNER_TEMP/boot-base-release/uml-boot-base-aarch64.cpio.gz" \
+            .build/ci-inputs/boot-base.cpio.gz
+          cp "$RUNNER_TEMP/boot-base-release/release-manifest.json" .build/ci-inputs/
           python3 -B tools/rootfs/boot-ramdisk/verify_base.py \
-            --descriptor tools/rootfs/boot-ramdisk/accepted-aarch64.env \
+            --write-descriptor .build/ci-inputs/boot-base.env \
+            --architecture aarch64 --release "ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
             --archive .build/ci-inputs/boot-base.cpio.gz
       - uses: actions/upload-artifact@v4
         with:
           name: verified-boot-base
-          path: .build/ci-inputs/boot-base.cpio.gz
+          path: .build/ci-inputs/
           if-no-files-found: error
           retention-days: 7
 
@@ -179,7 +192,8 @@ jobs:
           set -euo pipefail
           for preset in kernarium-ios-device kernarium-ios-device-android; do
             cmake --preset "$preset" \
-              -DUML_BOOT_BASE_ARCHIVE="$PWD/.build/ci-inputs/boot-base.cpio.gz"
+              -DUML_BOOT_BASE_ARCHIVE="$PWD/.build/ci-inputs/boot-base.cpio.gz" \
+              -DUML_BOOT_BASE_DESCRIPTOR="$PWD/.build/ci-inputs/boot-base.env"
             cmake --build --preset "$preset" --parallel "$(sysctl -n hw.logicalcpu)"
           done
           Kernarium/scripts/package-ios-frameworks.sh --sdk device

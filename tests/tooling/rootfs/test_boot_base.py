@@ -212,7 +212,62 @@ def main() -> int:
         descriptor, archive = write_fixture(
             Path(name), gzip.compress(newc(base_entries(machine))), "aarch64"
         )
+        generated = Path(name) / "generated.env"
+        subprocess.run([
+            sys.executable, "-B", str(boot_ramdisk / "verify_base.py"),
+            "--write-descriptor", str(generated), "--architecture", "aarch64",
+            "--archive", str(archive), "--release", "fixture-generated",
+        ], check=True, timeout=30)
+        result = verify_base.verify(generated, archive)
+        require(result["release"] == "fixture-generated", "new descriptor release")
+        original_descriptor = generated.read_bytes()
+        try:
+            verify_base.write_descriptor(archive, "aarch64", "replacement", generated)
+        except verify_base.VerificationError:
+            pass
+        else:
+            raise RuntimeError("descriptor creation overwrote an existing acceptance")
+        require(generated.read_bytes() == original_descriptor, "existing descriptor changed")
+
+        cmake = shutil.which("cmake")
+        require(cmake is not None, "no CMake to check boot base selection")
+        script = Path(name) / "select-base.cmake"
+        script.write_text(
+            f'set(PROJECT_SOURCE_DIR "{boot_ramdisk.parents[2].as_posix()}")\n'
+            f'include("{(boot_ramdisk / "BootBase.cmake").as_posix()}")\n'
+            'uml_select_boot_base("${GUEST_ARCH}" selected)\n'
+            'if(NOT selected STREQUAL UML_BOOT_BASE_ARCHIVE)\n'
+            '  message(FATAL_ERROR "wrong archive selected")\n'
+            'endif()\n'
+        )
+
+        def select_base(architecture: str, custom: bool = True) -> subprocess.CompletedProcess:
+            command = [cmake, f"-DGUEST_ARCH={architecture}",
+                       f"-DUML_BOOT_BASE_ARCHIVE={archive}"]
+            if custom:
+                command.append(f"-DUML_BOOT_BASE_DESCRIPTOR={generated}")
+            return subprocess.run([*command, "-P", str(script)],
+                                  capture_output=True, text=True, timeout=30)
+
+        selection = select_base("aarch64")
+        require(selection.returncode == 0, f"custom descriptor rejected: {selection.stderr}")
+        selection = select_base("x86_64")
+        require(selection.returncode != 0 and "not x86_64" in " ".join(selection.stderr.split()),
+                f"CMake did not reject the architecture: {selection.stderr}")
+        selection = select_base("aarch64", custom=False)
+        require(selection.returncode != 0 and "does not match" in " ".join(selection.stderr.split()),
+                "CMake default stopped enforcing tracked acceptance")
         archive.write_bytes(archive.read_bytes()[:-1] + b"\xff")
+        selection = select_base("aarch64")
+        require(selection.returncode != 0 and "does not match" in " ".join(selection.stderr.split()),
+                "CMake accepted an archive with the wrong digest")
+        rejected_descriptor = Path(name) / "rejected.env"
+        try:
+            verify_base.write_descriptor(archive, "aarch64", "invalid", rejected_descriptor)
+        except verify_base.VerificationError:
+            require(not rejected_descriptor.exists(), "invalid base left a descriptor")
+        else:
+            raise RuntimeError("descriptor creation accepted a corrupt archive")
         try:
             verify_base.verify(descriptor, archive)
         except verify_base.VerificationError as error:
