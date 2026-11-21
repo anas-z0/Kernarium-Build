@@ -249,6 +249,9 @@ prefixes, and the device application. An arm64 Linux job builds the boot base
 with the starter producer and verifies its boot contract before creating a
 descriptor for that run. The Apple build consumes that descriptor and checks
 the archive's checksum; the workflow needs no external boot-base download.
+The boot archive, descriptor and producer manifest are cached together by the
+starter producer's inputs and the verifier. An exact cache hit skips the
+producer; every restored archive is verified again before publication.
 It runs on manual dispatch and relevant boot-producer or workflow changes on
 `main`.
 The downloadable

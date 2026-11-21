@@ -29,7 +29,14 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
+      - name: Restore verified boot base
+        id: boot-cache
+        uses: actions/cache@v5
+        with:
+          path: .build/ci-inputs/
+          key: boot-base-aarch64-v1-${{ hashFiles('tools/rootfs/starter/**', 'tools/rootfs/producer.sh', 'tools/rootfs/boot-ramdisk/verify_base.py') }}
       - name: Install Linux image build tools
+        if: steps.boot-cache.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
           sudo apt-get update
@@ -40,6 +47,7 @@ jobs:
           python3 -B tests/tooling/rootfs/test_boot_base.py \
             --boot-ramdisk tools/rootfs/boot-ramdisk
       - name: Produce and verify Linux boot base
+        if: steps.boot-cache.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
           tools/rootfs/starter/build-all.sh --product boot-base-aarch64 \
@@ -52,6 +60,12 @@ jobs:
           python3 -B tools/rootfs/boot-ramdisk/verify_base.py \
             --write-descriptor .build/ci-inputs/boot-base.env \
             --architecture aarch64 --release "ci-${GITHUB_RUN_ID}-${GITHUB_RUN_ATTEMPT}" \
+            --archive .build/ci-inputs/boot-base.cpio.gz
+      - name: Verify boot base before publication
+        run: |
+          set -euo pipefail
+          python3 -B tools/rootfs/boot-ramdisk/verify_base.py \
+            --descriptor .build/ci-inputs/boot-base.env \
             --archive .build/ci-inputs/boot-base.cpio.gz
       - uses: actions/upload-artifact@v4
         with:
@@ -93,24 +107,26 @@ jobs:
           dependencies/prepare.sh --archive-manifest dependencies/kernel-host-tools/archives.tsv
           dependencies/build-kernel-host-tools.sh --jobs "$(sysctl -n hw.logicalcpu)"
           echo "UML_KERNEL_LD=$(brew --prefix llvm)/bin/ld.lld" >> "$GITHUB_ENV"
-      - name: Prepare verified kernel host tools
-        run: |
-          set -euo pipefail
-          dependencies/prepare.sh --product kernel-host-tools
-          dependencies/prepare.sh --archive-manifest dependencies/kernel-host-tools/archives.tsv
-          dependencies/build-kernel-host-tools.sh --jobs "$(sysctl -n hw.logicalcpu)"
       - name: Create case-sensitive kernel workspace
         run: |
           set -euo pipefail
           mount="$RUNNER_TEMP/kernarium-kernel"
           mkdir -p "$mount"
-          hdiutil create -size 60g -type SPARSE -fs APFSX \
+          hdiutil create -size 60g -type SPARSE -fs 'Case-sensitive APFS' \
             -volname KernariumKernel "$RUNNER_TEMP/kernel.sparseimage"
           hdiutil attach "$RUNNER_TEMP/kernel.sparseimage" \
             -mountpoint "$mount" -nobrowse
+          echo "KERNEL_WORK=$mount" >> "$GITHUB_ENV"
+          probe=$(mktemp -d "$mount/.case-probe.XXXXXX")
+          touch "$probe/lowercase"
+          if [ -e "$probe/LOWERCASE" ]; then
+            echo 'Kernel workspace must be case-sensitive' >&2
+            exit 1
+          fi
+          rm "$probe/lowercase"
+          rmdir "$probe"
           printf 'UML_KERNEL_SOURCE_DIR=%s/linux\n' "$mount" \
             > kernel/mainline-6.18/source-location.conf
-          echo "KERNEL_WORK=$mount" >> "$GITHUB_ENV"
       - name: Build and publish both accepted kernel products
         run: |
           set -euo pipefail
