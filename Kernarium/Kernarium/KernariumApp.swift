@@ -27,6 +27,7 @@ struct KernariumApp: App {
         #else
         setenv("MESA_LOADER_DRIVER_OVERRIDE", "zink", 1)
         #endif
+        EmulatorLauncher.shared.prepareJitAtLaunch()
     }
 
     var body: some Scene {

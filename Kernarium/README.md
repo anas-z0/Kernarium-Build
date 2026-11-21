@@ -30,6 +30,16 @@ into this application and into Andarium.
 
 ## Runtimes and runs
 
+The Experimental JIT switch in Emulator settings is off by default and applies
+on the next launch. Enable it, assign StikDebug's universal JIT script to
+Kernarium, and reopen the application from StikDebug. Kernarium prepares memory
+as it opens and waits for that preparation before requesting JIT for the guest.
+Settings reports readiness or the reason a request fell back to gadgets;
+the host log's `UML: active execution engine` line reports the selected engine.
+CPU and memory settings must match the preparation, which lasts for that
+process. The tooling test `kernarium-jit-preparation` checks the request policy
+without a debugger or guest.
+
 Kernarium uses `6.18`-series runtime frameworks for Linux
 (`KRuntime_6_18_4K`) and Android (`KRuntime_Android_6_18_4K`), both with 4 KiB
 guest pages. Their names stay stable across patch releases and kernel commits,

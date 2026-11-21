@@ -8,6 +8,10 @@ on:
     paths:
       - .github/workflows/build-kernarium.yml
       - dependencies/**
+      - Kernarium/**
+      - GuestHost/**
+      - darwin/**
+      - tests/tooling/kernarium/**
       - kernel/**
       - scripts/patch_series.py
       - tools/rootfs/boot-ramdisk/**
@@ -25,6 +29,16 @@ defaults:
     shell: bash
 
 jobs:
+  jit-policy:
+    runs-on: xcode-27
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - name: Test Kernarium JIT preparation policy
+        run: sh tests/tooling/kernarium/test_jit_preparation.sh
+
   boot-base:
     runs-on: ubuntu-24.04-arm
     timeout-minutes: 180
@@ -220,7 +234,7 @@ jobs:
           fi
 
   app:
-    needs: kernels
+    needs: [kernels, jit-policy]
     runs-on: xcode-27
     timeout-minutes: 240
     steps:

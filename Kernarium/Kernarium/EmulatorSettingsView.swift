@@ -7,6 +7,8 @@ import UIKit
 struct EmulatorSettingsView: View {
     @Environment(\.dismiss) private var dismiss
     @ObservedObject private var microphone = MicrophoneSetting.shared
+    @ObservedObject private var jit = KernariumJit.shared
+    @AppStorage(KernariumJit.defaultsKey) private var jitEnabled = false
 
     @State private var configuration: EmulatorConfiguration
     @State private var backgroundMode: BackgroundMode
@@ -84,6 +86,16 @@ struct EmulatorSettingsView: View {
     var body: some View {
         NavigationStack {
             Form {
+                Section("Execution") {
+                    Toggle("Experimental JIT", isOn: $jitEnabled)
+                        .accessibilityIdentifier("jitToggle")
+                    Text(jit.status)
+                        .accessibilityIdentifier("jitStatus")
+                    Text("After enabling JIT, close Kernarium and open it from StikDebug with its universal JIT script assigned. Changes apply on the next launch.")
+                        .font(.footnote)
+                        .foregroundStyle(.secondary)
+                }
+
                 Section("Hardware") {
                     Toggle("Retina mode", isOn: $configuration.retinaMode)
                         .accessibilityIdentifier("retinaModeToggle")

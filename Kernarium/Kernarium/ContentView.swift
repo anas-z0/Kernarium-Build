@@ -833,7 +833,8 @@ private func runGuest(
     guestMemoryMiB: UInt32,
     vCPUCount: UInt32,
     autoResizeGuest: Bool,
-    gpuBudget: GPUBudgetParameters
+    gpuBudget: GPUBudgetParameters,
+    useJit: Bool
 ) -> Int32 {
     boot.withCPaths { paths in
         var request = kernarium_runtime_boot()
@@ -853,6 +854,7 @@ private func runGuest(
         request.android_data_disk_path = paths[2]
         request.android_release_path = paths[3]
         request.android_data_gib = boot.androidDataGiB
+        request.use_jit = useJit ? 1 : 0
         return withUnsafePointer(to: &request) { pointer in
             kernarium_runtime_loader_run(view, pointer)
         }
@@ -948,6 +950,17 @@ final class EmulatorLauncher: ObservableObject, SpaceRun {
     var isActive: Bool { phase == .running && !restarting }
 
     var guestName: String { runningGuestIsAndroid ? "Android" : "Linux" }
+
+    func prepareJitAtLaunch() {
+        let flavor = RootfsImage.selectedFilename(
+            configuredFilename: configuration.rootfsFilename
+        ).flatMap { RootfsImage.selection(named: $0) }?.flavor ?? .linux
+        KernariumJit.shared.prepareAtLaunch(
+            flavor: flavor.rawValue,
+            memoryMiB: UInt32(clamping: configuration.guestMemoryMiB),
+            processors: UInt32(clamping: configuration.vCPUCount)
+        )
+    }
 
     fileprivate func start(
         view: GuestMetalView,
@@ -1067,26 +1080,33 @@ final class EmulatorLauncher: ObservableObject, SpaceRun {
         // task happens to be scheduled, and keep it off the cooperative pool it
         // would otherwise block for hours. It inherits the main thread's
         // SIGALRM block, which the runtime then reasserts for itself.
-        let worker = Thread {
-            let result = Self.runThread(stop) {
-                runGuest(
-                    view: view,
-                    boot: boot,
-                    width: width,
-                    height: height,
-                    dotsPerInch: dotsPerInch,
-                    guestMemoryMiB: guestMemoryMiB,
-                    vCPUCount: vCPUCount,
-                    autoResizeGuest: autoResizeGuest,
-                    gpuBudget: gpuBudget
-                )
+        let flavor = selection.flavor.rawValue
+        Task { @MainActor in
+            let useJit = await KernariumJit.shared.useJitForBoot(
+                flavor: flavor, memoryMiB: guestMemoryMiB, processors: vCPUCount
+            )
+            let worker = Thread {
+                let result = Self.runThread(stop) {
+                    runGuest(
+                        view: view,
+                        boot: boot,
+                        width: width,
+                        height: height,
+                        dotsPerInch: dotsPerInch,
+                        guestMemoryMiB: guestMemoryMiB,
+                        vCPUCount: vCPUCount,
+                        autoResizeGuest: autoResizeGuest,
+                        gpuBudget: gpuBudget,
+                        useJit: useJit
+                    )
+                }
+                Task { @MainActor in
+                    EmulatorLauncher.shared.finished(result: result)
+                }
             }
-            Task { @MainActor in
-                EmulatorLauncher.shared.finished(result: result)
-            }
+            worker.name = "uml-launcher"
+            worker.start()
         }
-        worker.name = "uml-launcher"
-        worker.start()
     }
 
     /// The run begins: the guest is running as far as the application can

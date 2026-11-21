@@ -561,6 +561,11 @@ public:
 			return -UML_EMULATOR_INVALID_ARGUMENT;
 		if (runtime_.set_execution_engine(prepared.engine) != 0)
 			return -UML_EMULATOR_UNSUPPORTED;
+#ifndef UML_APP_STORE_RUNTIME
+		std::fprintf(stderr, "UML: active execution engine: %s\n",
+			runtime_.execution_engine() == ::uml::runtime::ExecutionEngine::jit
+				? "JIT" : "gadgets");
+#endif
 		runtime_.set_top_byte_ignore(prepared.top_byte_ignore);
 		/* Before any executor reads it, so before any table of the
 		 * component exists: the component runs only with the release it was
