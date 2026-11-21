@@ -252,7 +252,7 @@ the archive's checksum; the workflow needs no external boot-base download.
 The boot archive, descriptor and producer manifest are cached together by the
 starter producer's inputs and the verifier. An exact cache hit skips the
 producer; every restored archive is verified again before publication.
-It runs on manual dispatch and relevant boot-producer or workflow changes on
+It runs on manual dispatch and relevant dependency, boot-producer or workflow changes on
 `main`.
 The downloadable
 `Kernarium-unsigned-ipa` artifact needs external signing before installation,

@@ -449,7 +449,9 @@ mesa_setup()
 MESA_BUILD="$BUILDS/Mesa"
 MESA_PKG_CONFIG="$BUILDS/empty-mesa-pkgconfig"
 mkdir -p -- "$MESA_PKG_CONFIG"
-MESA_TOOL_PATH="$(dirname -- "$PYTHON"):$(dirname -- "$MESON"):$(dirname -- "$NINJA"):$APPLE_GPU_TOOL_PATH"
+# The isolated environment must retain the generators selected above too;
+# otherwise Meson rediscovers Apple's Bison 2 even when Bison 3 was selected.
+MESA_TOOL_PATH="$(dirname -- "$BISON"):$(dirname -- "$FLEX"):$(dirname -- "$PYTHON"):$(dirname -- "$MESON"):$(dirname -- "$NINJA"):$APPLE_GPU_TOOL_PATH"
 VENUS_PROTOCOL_GENERATED_SHA256=
 if [ "$SOFTWARE" -eq 0 ]; then
 	# The protocol producer runs out of tree against authenticated source, so
