@@ -8,6 +8,8 @@ on:
     paths:
       - .github/workflows/build-kernarium.yml
       - dependencies/**
+      - kernel/**
+      - scripts/patch_series.py
       - tools/rootfs/boot-ramdisk/**
       - tools/rootfs/starter/**
 
@@ -105,13 +107,34 @@ jobs:
           "$(brew --prefix llvm)/bin/clang" --version
           "$(brew --prefix lld)/bin/ld.lld" --version
           "$(brew --prefix llvm)/bin/llvm-objcopy" --version
+      - name: Identify kernel toolchain
+        id: kernel-toolchain
+        run: |
+          set -euo pipefail
+          {
+            "$UML_KERNEL_CC" --version
+            "$UML_KERNEL_LD" --version
+            "$(brew --prefix llvm)/bin/llvm-objcopy" --version
+            gmake --version
+            xcodebuild -version
+            xcrun --sdk macosx --show-sdk-version
+            sw_vers -productVersion
+          } | shasum -a 256 | awk '{ print "fingerprint=" $1 }' >> "$GITHUB_OUTPUT"
+      - name: Restore accepted kernel bundles
+        id: kernel-cache
+        uses: actions/cache@v5
+        with:
+          path: .build/kernel/artifacts/
+          key: kernels-arm64-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.kernel-toolchain.outputs.fingerprint }}-${{ hashFiles('kernel/**', 'dependencies/manifest.tsv', 'dependencies/patches/**', 'dependencies/kernel-host-tools/**', 'dependencies/build-kernel-host-tools.sh', 'dependencies/build-common.sh', 'scripts/patch_series.py') }}
       - name: Build verified kernel host tools
+        if: steps.kernel-cache.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
           dependencies/prepare.sh --product kernel-host-tools
           dependencies/prepare.sh --archive-manifest dependencies/kernel-host-tools/archives.tsv
           dependencies/build-kernel-host-tools.sh --jobs "$(sysctl -n hw.logicalcpu)"
       - name: Create case-sensitive kernel workspace
+        if: steps.kernel-cache.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
           mount="$RUNNER_TEMP/kernarium-kernel"
@@ -132,6 +155,7 @@ jobs:
           printf 'UML_KERNEL_SOURCE_DIR=%s/linux\n' "$mount" \
             > kernel/mainline-6.18/source-location.conf
       - name: Build and publish both accepted kernel products
+        if: steps.kernel-cache.outputs.cache-hit != 'true'
         run: |
           set -euo pipefail
           kernel/mainline-6.18/scripts/prepare-source.sh
@@ -151,6 +175,21 @@ jobs:
               --product "$product" --output-root "$PWD/.build/kernel/artifacts" \
               --release-id "$UML_KERNEL_ARTIFACT_RELEASE_ID" \
               --objcopy "$(brew --prefix llvm)/bin/llvm-objcopy"
+          done
+      - name: Verify accepted kernel bundles before publication
+        run: |
+          set -euo pipefail
+          for descriptor in kernel/mainline-6.18/artifacts/accepted-4k.env \
+            kernel/mainline-6.18/artifacts/accepted-android-4k.env; do
+            # shellcheck disable=SC1090
+            source "$descriptor"
+            python3 -B kernel/common/artifacts/verify-kernel-artifact.py \
+              --artifact "$PWD/.build/kernel/artifacts/$UML_KERNEL_ARTIFACT_DIRECTORY_NAME" \
+              --common-root "$PWD/kernel/common" \
+              --abi-metadata "$PWD/kernel/common/abi/identity.env" \
+              --compatible --expected-family "$UML_KERNEL_ARTIFACT_FAMILY" \
+              --expected-slice arm64 --expected-release-series 6.18 \
+              --descriptor "$PWD/$descriptor"
           done
       - uses: actions/upload-artifact@v4
         with:

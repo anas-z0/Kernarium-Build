@@ -252,8 +252,12 @@ the archive's checksum; the workflow needs no external boot-base download.
 The boot archive, descriptor and producer manifest are cached together by the
 starter producer's inputs and the verifier. An exact cache hit skips the
 producer; every restored archive is verified again before publication.
-It runs on manual dispatch and relevant dependency, boot-producer or workflow changes on
-`main`.
+Both published kernel bundles are cached by kernel and host-tool inputs plus
+the compiler, linker, SDK and host toolchain identities. A matching entry
+skips kernel source preparation and compilation; each bundle is verified
+against its accepted descriptor and bridge ABI before publication.
+The workflow runs on manual dispatch and relevant dependency, kernel,
+boot-producer or workflow changes on `main`.
 The downloadable
 `Kernarium-unsigned-ipa` artifact needs external signing before installation,
 including the application's increased-memory-limit and extended-virtual-addressing
