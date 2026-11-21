@@ -122,10 +122,10 @@ jobs:
           } | shasum -a 256 | awk '{ print "fingerprint=" $1 }' >> "$GITHUB_OUTPUT"
       - name: Restore accepted kernel bundles
         id: kernel-cache
-        uses: actions/cache@v5
+        uses: actions/cache/restore@v5
         with:
           path: .build/kernel/artifacts/
-          key: kernels-arm64-v1-${{ runner.os }}-${{ runner.arch }}-${{ steps.kernel-toolchain.outputs.fingerprint }}-${{ hashFiles('kernel/**', 'dependencies/manifest.tsv', 'dependencies/patches/**', 'dependencies/kernel-host-tools/**', 'dependencies/build-kernel-host-tools.sh', 'dependencies/build-common.sh', 'scripts/patch_series.py') }}
+          key: kernels-arm64-v2-${{ runner.os }}-${{ runner.arch }}-${{ steps.kernel-toolchain.outputs.fingerprint }}-${{ hashFiles('kernel/**', 'dependencies/manifest.tsv', 'dependencies/patches/**', 'dependencies/kernel-host-tools/**', 'dependencies/build-kernel-host-tools.sh', 'dependencies/build-common.sh', 'scripts/patch_series.py') }}
       - name: Build verified kernel host tools
         if: steps.kernel-cache.outputs.cache-hit != 'true'
         run: |
@@ -173,24 +173,39 @@ jobs:
             python3 -B kernel/mainline-6.18/build/publish-artifact.py \
               --source "$KERNEL_WORK/linux" --build "$KERNEL_WORK/build-$product" \
               --product "$product" --output-root "$PWD/.build/kernel/artifacts" \
-              --release-id "$UML_KERNEL_ARTIFACT_RELEASE_ID" \
+              --release-id "ci-$UML_KERNEL_ARTIFACT_RELEASE_ID" \
               --objcopy "$(brew --prefix llvm)/bin/llvm-objcopy"
           done
       - name: Verify accepted kernel bundles before publication
         run: |
           set -euo pipefail
-          for descriptor in kernel/mainline-6.18/artifacts/accepted-4k.env \
-            kernel/mainline-6.18/artifacts/accepted-android-4k.env; do
-            # shellcheck disable=SC1090
-            source "$descriptor"
-            python3 -B kernel/common/artifacts/verify-kernel-artifact.py \
-              --artifact "$PWD/.build/kernel/artifacts/$UML_KERNEL_ARTIFACT_DIRECTORY_NAME" \
-              --common-root "$PWD/kernel/common" \
-              --abi-metadata "$PWD/kernel/common/abi/identity.env" \
-              --compatible --expected-family "$UML_KERNEL_ARTIFACT_FAMILY" \
-              --expected-slice arm64 --expected-release-series 6.18 \
-              --descriptor "$PWD/$descriptor"
-          done
+          python3 -B - <<'PY'
+          from pathlib import Path
+          import sys
+          root = Path.cwd()
+          common = root / 'kernel/common'
+          sys.path.insert(0, str(common / 'artifacts'))
+          from kernel_artifact import parse_env, verify_artifact, verify_compatible_identity
+          line = root / 'kernel/mainline-6.18'
+          for name in ('accepted-4k.env', 'accepted-android-4k.env'):
+              descriptor = parse_env(line / 'artifacts' / name)
+              family = descriptor['UML_KERNEL_ARTIFACT_FAMILY']
+              release_id = 'ci-' + descriptor['UML_KERNEL_ARTIFACT_RELEASE_ID']
+              bundle = root / '.build/kernel/artifacts' / f'{family}-arm64-4k-{release_id}'
+              manifest = verify_artifact(bundle, common, line / 'patches/metadata.env',
+                                         common / 'abi/identity.env')
+              verify_compatible_identity(manifest, common / 'abi/identity.env',
+                                         family, 'arm64', '6.18')
+              if manifest['release_id'] != release_id:
+                  raise SystemExit(f'Unexpected CI release identity: {bundle}')
+              print(f'Verified CI kernel: {bundle.name}, {manifest["release"]}')
+          PY
+      - name: Save verified kernel bundles immediately
+        if: steps.kernel-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v5
+        with:
+          path: .build/kernel/artifacts/
+          key: ${{ steps.kernel-cache.outputs.cache-primary-key }}
       - uses: actions/upload-artifact@v4
         with:
           name: kernel-bundles
@@ -250,9 +265,19 @@ jobs:
         run: |
           set -euo pipefail
           for preset in kernarium-ios-device kernarium-ios-device-android; do
+            descriptor=kernel/mainline-6.18/artifacts/accepted-4k.env
+            artifact_variable=UML_MAINLINE_618_KERNEL_ARTIFACT_DIR
+            if [ "$preset" = kernarium-ios-device-android ]; then
+              descriptor=kernel/mainline-6.18/artifacts/accepted-android-4k.env
+              artifact_variable=UML_ANDROID17_KERNEL_ARTIFACT_DIR
+            fi
+            # shellcheck disable=SC1090
+            source "$descriptor"
+            bundle="$PWD/.build/kernel/artifacts/$UML_KERNEL_ARTIFACT_FAMILY-arm64-4k-ci-$UML_KERNEL_ARTIFACT_RELEASE_ID"
             cmake --preset "$preset" \
               -DUML_BOOT_BASE_ARCHIVE="$PWD/.build/ci-inputs/boot-base.cpio.gz" \
-              -DUML_BOOT_BASE_DESCRIPTOR="$PWD/.build/ci-inputs/boot-base.env"
+              -DUML_BOOT_BASE_DESCRIPTOR="$PWD/.build/ci-inputs/boot-base.env" \
+              "-D$artifact_variable=$bundle"
             cmake --build --preset "$preset" --parallel "$(sysctl -n hw.logicalcpu)"
           done
           Kernarium/scripts/package-ios-frameworks.sh --sdk device
